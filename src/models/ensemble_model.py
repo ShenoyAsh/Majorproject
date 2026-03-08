@@ -6,7 +6,7 @@ from typing import Tuple
 class PPIEnsemble:
     def __init__(self, meta_model_path: str = None):
         """
-        Ensemble model using Stacking with enhanced features.
+        Ensemble model using Stacking with 4 features.
         Features: [seq_prob, gat_prob, |seq_prob - 0.5|, |gat_prob - 0.5|]
         """
         self.meta_model = None
@@ -20,16 +20,17 @@ class PPIEnsemble:
     @staticmethod
     def _build_features(base_preds_1: np.ndarray, base_preds_2: np.ndarray) -> np.ndarray:
         """
-        Build enhanced feature matrix for the meta-learner.
-        Adds |p - 0.5| confidence features for both models.
+        Build feature matrix for the meta-learner.
+        Adds |p - 0.5| confidence features for models.
         """
         conf_1 = np.abs(base_preds_1 - 0.5)
         conf_2 = np.abs(base_preds_2 - 0.5)
+        
         return np.column_stack((base_preds_1, base_preds_2, conf_1, conf_2))
 
     def train_stacking(self, base_preds_1: np.ndarray, base_preds_2: np.ndarray, labels: np.ndarray):
         """
-        Trains the XGBoost meta-learner with enhanced features.
+        Trains the XGBoost meta-learner.
         args:
             base_preds_1: Predictions from Sequence Model (N,)
             base_preds_2: Predictions from Graph Model (N,)

@@ -11,8 +11,16 @@ class PredictionResponse(BaseModel):
     interaction_probability: float
     esm_probability: float
     gat_probability: float
+    cross_probability: float = 0.5
     confidence_score: float
     explanation: Dict[str, float] # SHAP values or similar
+
+class CrossAttentionResponse(BaseModel):
+    interaction_probability: float
+    attention_12: List[List[float]]
+    attention_21: List[List[float]]
+    protein1_len: int
+    protein2_len: int
     
 class NetworkRequest(BaseModel):
     threshold: float = 0.5

@@ -22,7 +22,7 @@ def train_ensemble(seq_model_path, graph_model_path, graph_data_path):
     
     # Sequence Model
     input_dim = 320 
-    seq_model = SequencePPIModel(input_dim=input_dim).to(device)
+    seq_model = SequencePPIModel(input_dim=input_dim, hidden_dim=256, dropout=0.3).to(device)
     try:
         if os.path.exists(seq_model_path):
             seq_model.load_state_dict(torch.load(seq_model_path, map_location=device))
@@ -41,7 +41,7 @@ def train_ensemble(seq_model_path, graph_model_path, graph_data_path):
         return
     
     graph_data = torch.load(graph_data_path, weights_only=False).to(device)
-    graph_model = GATLinkPredictor(in_channels=graph_data.x.shape[1], hidden_channels=128).to(device)
+    graph_model = GATLinkPredictor(in_channels=graph_data.x.shape[1], hidden_channels=128, num_layers=3).to(device)
     try:
         if os.path.exists(graph_model_path):
             graph_model.load_state_dict(torch.load(graph_model_path, map_location=device))
@@ -53,8 +53,6 @@ def train_ensemble(seq_model_path, graph_model_path, graph_data_path):
         print(f"Failed to load graph model state dict: {e}")
         return
     graph_model.eval()
-
-    # 2. Generate Predictions on Validation Set
     print("Generating predictions on Validation Set...")
     val_path = PROCESSED_DATA_DIR / "val.csv"
     if not val_path.exists():
@@ -84,9 +82,9 @@ def train_ensemble(seq_model_path, graph_model_path, graph_data_path):
     
     final_labels = []
     
-    # Prepare batch data for Sequence Model
-    batch_emb1 = []
-    batch_emb2 = []
+    # Prepare batch data for Sequence Model (CLS)
+    batch_emb1_cls = []
+    batch_emb2_cls = []
     
     # Prepare indices for Graph Model
     g_src = []
@@ -96,8 +94,16 @@ def train_ensemble(seq_model_path, graph_model_path, graph_data_path):
         p1, p2, label = row["protein1"], row["protein2"], row["label"]
         
         # Seq components
-        batch_emb1.append(embeddings[p1])
-        batch_emb2.append(embeddings[p2])
+        e1_full = embeddings[p1]
+        e2_full = embeddings[p2]
+        
+        # Backward compat check
+        if e1_full.dim() == 1:
+            batch_emb1_cls.append(e1_full)
+            batch_emb2_cls.append(e2_full)
+        else:
+            batch_emb1_cls.append(e1_full[0])
+            batch_emb2_cls.append(e2_full[0])
         
         # Graph components
         g_src.append(node_mapping[p1])
@@ -107,17 +113,19 @@ def train_ensemble(seq_model_path, graph_model_path, graph_data_path):
 
     # Run Sequence Model
     print("Predicting with Sequence Model...")
-    batch_emb1 = torch.stack(batch_emb1)
-    batch_emb2 = torch.stack(batch_emb2)
+    batch_emb1_cls = torch.stack(batch_emb1_cls)
+    batch_emb2_cls = torch.stack(batch_emb2_cls)
     batch_size = 32
     
     final_seq_preds = []
     with torch.no_grad():
-        for i in range(0, len(batch_emb1), batch_size):
-            e1 = batch_emb1[i:i+batch_size].to(device)
-            e2 = batch_emb2[i:i+batch_size].to(device)
+        for i in range(0, len(batch_emb1_cls), batch_size):
+            e1 = batch_emb1_cls[i:i+batch_size].to(device)
+            e2 = batch_emb2_cls[i:i+batch_size].to(device)
             out = seq_model(e1, e2)
-            final_seq_preds.extend(out.cpu().numpy().flatten())
+            # Apply sigmoid to raw logits
+            probs = torch.sigmoid(out)
+            final_seq_preds.extend(probs.cpu().numpy().flatten())
             
     # Run Graph Model — apply sigmoid to raw logits
     print("Predicting with Graph Model...")
@@ -141,7 +149,7 @@ def train_ensemble(seq_model_path, graph_model_path, graph_data_path):
         print("No valid validation samples found.")
         return
 
-    # 3. Train Ensemble with enhanced features
+    # 3. Train Ensemble with 4 features
     ensemble = PPIEnsemble()
     ensemble.train_stacking(seq_preds_np, graph_preds_np, val_labels_np)
     

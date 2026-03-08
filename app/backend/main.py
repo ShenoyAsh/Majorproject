@@ -58,7 +58,7 @@ async def load_system():
     
     # Sequence Model
     seq_path = PROJECT_ROOT / "models" / "sequence_model_best.pth"
-    models["seq_model"] = SequencePPIModel(input_dim=320).to(device)
+    models["seq_model"] = SequencePPIModel(input_dim=320, hidden_dim=256, dropout=0.3).to(device)
     if seq_path.exists():
         models["seq_model"].load_state_dict(torch.load(seq_path, map_location=device))
         models["seq_model"].eval()
@@ -72,7 +72,7 @@ async def load_system():
     if graph_data_path.exists():
         data_cache["graph"] = torch.load(graph_data_path, weights_only=False).to(device)
         in_channels = data_cache["graph"].x.shape[1]
-        models["graph_model"] = GATLinkPredictor(in_channels=in_channels, hidden_channels=128).to(device)
+        models["graph_model"] = GATLinkPredictor(in_channels=in_channels, hidden_channels=128, num_layers=3).to(device)
         if graph_path.exists():
             models["graph_model"].load_state_dict(torch.load(graph_path, map_location=device))
             models["graph_model"].eval()
@@ -129,12 +129,20 @@ async def predict_interaction(pair: ProteinPair):
 
         # 2. Get Embeddings
         embs = models["esm"].get_embeddings(sequences, batch_size=2)
-        e1 = embs[p1].unsqueeze(0).to(models["esm"].device)
-        e2 = embs[p2].unsqueeze(0).to(models["esm"].device)
+        emb1_full = embs[p1].to(models["esm"].device)
+        emb2_full = embs[p2].to(models["esm"].device)
+        
+        if emb1_full.dim() == 1:
+            e1 = emb1_full.unsqueeze(0)
+            e2 = emb2_full.unsqueeze(0)
+        else:
+            e1 = emb1_full[0].unsqueeze(0)
+            e2 = emb2_full[0].unsqueeze(0)
         
         # 3. Sequence Prediction
         with torch.no_grad():
-            seq_prob = models["seq_model"](e1, e2).item()
+            seq_logit = models["seq_model"](e1, e2)
+            seq_prob = torch.sigmoid(seq_logit).item()
             
         # 4. Graph Prediction
         graph_prob = 0.5 
@@ -149,18 +157,26 @@ async def predict_interaction(pair: ProteinPair):
                 graph_prob = torch.sigmoid(g_out).item()
         
         # 5. Ensemble Prediction
-        final_prob = models["ensemble"].predict(np.array([seq_prob]), np.array([graph_prob]), method="stacking" if models["ensemble"].meta_model else "soft_voting")[0]
+        method = "stacking" if models["ensemble"].meta_model else "soft_voting"
+        final_prob = models["ensemble"].predict(
+            np.array([seq_prob]), 
+            np.array([graph_prob]), 
+            method=method
+        )[0]
         
         # 6. Explanation
         explanation = {
             "Sequence_Model_Contribution": seq_prob,
-            "Graph_Model_Contribution": graph_prob,
+            "Graph_Model_Contribution": graph_prob
         }
         
         if "explainer" in models:
-            shap_vals = models["explainer"].explain_prediction(seq_prob, graph_prob)
-            explanation["SHAP_Sequence"] = float(shap_vals[0][0])
-            explanation["SHAP_Graph"] = float(shap_vals[0][1])
+            try:
+                shap_vals = models["explainer"].explain_prediction(seq_prob, graph_prob)
+                explanation["SHAP_Sequence"] = float(shap_vals[0][0])
+                explanation["SHAP_Graph"] = float(shap_vals[0][1])
+            except:
+                pass
 
         return {
             "interaction_probability": float(final_prob),

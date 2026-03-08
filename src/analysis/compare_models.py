@@ -81,13 +81,15 @@ def evaluate_models():
     ensemble_path = PROJECT_ROOT / "models" / "ensemble_model.pkl"
 
     sample_emb = next(iter(embeddings.values()))
-    seq_model = SequencePPIModel(input_dim=sample_emb.shape[0]).to(device)
+    # Use the last dimension for input_dim (handles both 1D and 2D embeddings)
+    input_dim = sample_emb.shape[-1] if sample_emb.dim() > 1 else sample_emb.shape[0]
+    seq_model = SequencePPIModel(input_dim=input_dim, hidden_dim=256, dropout=0.3).to(device)
     if seq_path.exists():
          seq_model.load_state_dict(torch.load(seq_path, map_location=device))
     seq_model.eval()
 
-    # Updated GAT: hidden_channels=128
-    graph_model = GATLinkPredictor(in_channels=graph_data.x.shape[1], hidden_channels=128).to(device)
+    # Updated GAT: hidden_channels=128, num_layers=3
+    graph_model = GATLinkPredictor(in_channels=graph_data.x.shape[1], hidden_channels=128, num_layers=3).to(device)
     if graph_model_path.exists():
          graph_model.load_state_dict(torch.load(graph_model_path, map_location=device))
     graph_model.eval()
@@ -105,8 +107,11 @@ def evaluate_models():
 
     for _, row in filtered_df.iterrows():
         p1, p2, label = row["protein1"], row["protein2"], row["label"]
-        batch_emb1.append(embeddings[p1])
-        batch_emb2.append(embeddings[p2])
+        e1 = embeddings[p1]
+        e2 = embeddings[p2]
+        # Extract CLS token if embeddings are 2D (sequence_length x dim)
+        batch_emb1.append(e1[0] if e1.dim() > 1 else e1)
+        batch_emb2.append(e2[0] if e2.dim() > 1 else e2)
         g_src.append(node_mapping[p1])
         g_dst.append(node_mapping[p2])
         labels.append(label)
@@ -122,7 +127,9 @@ def evaluate_models():
         batch_size = 64
         for i in range(0, len(batch_emb1), batch_size):
             out = seq_model(batch_emb1[i:i+batch_size], batch_emb2[i:i+batch_size])
-            seq_preds.extend(out.cpu().numpy().flatten())
+            # Apply sigmoid to raw logits
+            probs = torch.sigmoid(out)
+            seq_preds.extend(probs.cpu().numpy().flatten())
     seq_preds = np.array(seq_preds)
 
     # Predict Graph — apply sigmoid to raw logits

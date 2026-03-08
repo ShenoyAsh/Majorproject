@@ -39,14 +39,13 @@ class ESMFeatureExtractor:
             
             with torch.no_grad():
                 outputs = self.model(**inputs)
-                # Use the representation of the [CLS] token (index 0)
-                # Or mean pooling over the sequence length?
-                # ESM-2 embeddings are usually taken from the last hidden state.
-                # Common practice: Mean pooling excluding padding, or just CLS.
-                # Let's use BOS token (index 0) as sequence representation.
-                batch_embeddings = outputs.last_hidden_state[:, 0, :]
                 
-            for pid, emb in zip(batch_ids, batch_embeddings):
+            for j, pid in enumerate(batch_ids):
+                seq_len = len(batch_seqs[j])
+                # Cap sequence length to what was processed minus EOS (1024 max)
+                actual_len = min(seq_len, 1024 - 2)
+                # Take CLS token (index 0) + all amino acid tokens (indexes 1 to actual_len)
+                emb = outputs.last_hidden_state[j, 0:actual_len+1, :]
                 embeddings[pid] = emb.cpu()
                 
         return embeddings
